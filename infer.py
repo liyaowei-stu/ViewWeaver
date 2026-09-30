@@ -113,11 +113,11 @@ def main():
         target = metadata["targets"][index]
         render = read_rgb(target["image"]).resize((args.width, args.height), Image.Resampling.BICUBIC)
         # Each generated image uses its own target camera, not target 000's pose.
-        pose = torch.from_numpy(target["w2c"]).unsqueeze(0).to(device="cuda", dtype=torch.bfloat16)
+        target_w2c = torch.from_numpy(target["w2c"]).unsqueeze(0).to(device="cuda", dtype=torch.bfloat16)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             result = pipeline(
                 prompt=prompt, image=render, recon_feats=features, source_w2c=source_w2c,
-                target_w2c=pose, height=args.height, width=args.width,
+                target_w2c=target_w2c, height=args.height, width=args.width,
                 num_inference_steps=args.steps, guidance_scale=args.guidance_scale,
                 true_cfg_scale=1.0, generator=generator, max_sequence_length=512,
                 _auto_resize=False, joint_attention_kwargs={"attention_mask": None},
