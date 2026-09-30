@@ -76,10 +76,10 @@ def preprocess_images(images, masks):
 
 
 @torch.no_grad()
-def render_targets(points, colors, source, scale, output, options):
+def render_targets(points, colors, source_w2c, scale, output, options):
     """Shared by fresh VGGT preparation and new angles from cached geometry."""
     targets, intrinsics = orbit_cameras(
-        source, scale, azimuth=options["azimuth"], elevation=options["elevation"],
+        source_w2c, scale, azimuth=options["azimuth"], elevation=options["elevation"],
         distance=options["camera_distance"], fov=options["fov"],
         principal_x=options["principal_x"], principal_y=options["principal_y"], image_size=options["render_size"],
         reference_view=options["reference_view"],
@@ -99,7 +99,7 @@ def render_targets(points, colors, source, scale, output, options):
 
 
 @torch.no_grad()
-def render_cached_case(case_path, source, output, options):
+def render_cached_case(case_path, source_w2c, output, options):
     with np.load(case_path / "geometry.npz", allow_pickle=False) as data:
         points, colors, scale = (np.array(data[key], copy=True) for key in
                                 ("points", "colors", "normalization_scale"))
@@ -109,7 +109,7 @@ def render_cached_case(case_path, source, output, options):
         raise ValueError("Invalid cached geometry: expected finite points/colors [N,3] and positive scalar scale")
     tensors = [torch.as_tensor(value, dtype=torch.float32, device="cuda")
                for value in (points, colors, scale)]
-    entries, coverage = render_targets(tensors[0], tensors[1], source.cuda().float(), tensors[2], output, options)
+    entries, coverage = render_targets(tensors[0], tensors[1], source_w2c.cuda().float(), tensors[2], output, options)
     for entry in entries:
         entry["image"] = output / entry["image"]
         entry["w2c"] = np.asarray(entry["w2c"], dtype=np.float32)
@@ -130,14 +130,14 @@ def prepare_case(case_path, output, model, model_path, options):
         tokens, patch_start = model.aggregator(rgb[None])
         pose = model.camera_head(tokens)[-1]
         depth, confidence = model.depth_head(tokens, images=rgb[None], patch_start_idx=patch_start)
-        source, intrinsic = pose_encoding_to_extri_intri(pose, rgb.shape[-2:])
-    source, intrinsic = source[0].float(), intrinsic[0].float()
+        source_w2c, intrinsic = pose_encoding_to_extri_intri(pose, rgb.shape[-2:])
+    source_w2c, intrinsic = source_w2c[0].float(), intrinsic[0].float()
     depth, confidence = depth[0, ..., 0].float(), confidence[0].float()
     features = tokens[-1][0, :, patch_start:].reshape(len(images), 37, 37, 2048).permute(0, 3, 1, 2)
     features = features * F.interpolate(foreground, size=(37, 37), mode="nearest")
     features = features.cpu().to(torch.float16).numpy()
     del tokens, pose
-    points = unproject_depth(depth, source, intrinsic)
+    points = unproject_depth(depth, source_w2c, intrinsic)
     valid = ((foreground[:, 0] > 0.5) & torch.isfinite(points).all(-1)
              & torch.isfinite(confidence) & (confidence >= 1.0) & (depth > 0))
     if valid.sum() < 100:
@@ -149,17 +149,17 @@ def prepare_case(case_path, output, model, model_path, options):
         # Evenly retain samples across all input views after confidence filtering.
         keep = torch.linspace(0, len(points) - 1, options["max_points"], device=points.device).long()
         points, colors = points[keep], colors[keep]
-    points, normalized_source, center, scale = normalize_scene(points, source)
-    entries, coverage = render_targets(points, colors, normalized_source, scale, output, options)
+    points, normalized_source_w2c, center, scale = normalize_scene(points, source_w2c)
+    entries, coverage = render_targets(points, colors, normalized_source_w2c, scale, output, options)
     (output / "references").mkdir()
     for i, image in enumerate(images):
         image.save(output / "references" / f"{i:03d}.png")
         masks[i].save(output / "references" / f"{i:03d}_mask.png")
     np.savez_compressed(output / "conditioning.npz", recon_feats=features,
-                        source_w2c=normalized_source.cpu().numpy())
+                        source_w2c=normalized_source_w2c.cpu().numpy())
     np.savez_compressed(output / "geometry.npz", points=points.cpu().numpy(), colors=colors.cpu().numpy(),
                         depth=depth.cpu().numpy(), depth_confidence=confidence.cpu().numpy(),
-                        source_w2c_raw=source.cpu().numpy(), source_intrinsic=intrinsic.cpu().numpy(),
+                        source_w2c_raw=source_w2c.cpu().numpy(), source_intrinsic=intrinsic.cpu().numpy(),
                         normalization_center=center.cpu().numpy(), normalization_scale=scale.cpu().numpy())
     hashes = {}
     for ref in metadata["references"]:

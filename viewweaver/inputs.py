@@ -74,12 +74,12 @@ def load_case(case_dir):
         raise ValueError("case.json must contain a nonempty prompt")
     with np.load(root / "conditioning.npz", allow_pickle=False) as data:
         features = data["recon_feats"].copy()
-        source = data["source_w2c"].copy()
+        source_w2c = data["source_w2c"].copy()
     if features.ndim != 4 or features.shape[1] != 2048 or min(features.shape) == 0:
         raise ValueError(f"recon_feats must have shape [S, 2048, H, W], got {features.shape}")
     if not np.isfinite(features).all():
         raise ValueError("recon_feats contains NaN or infinity")
-    source = validate_pose(source, (features.shape[0], 3, 4), "source_w2c")
+    source_w2c = validate_pose(source_w2c, (features.shape[0], 3, 4), "source_w2c")
     targets = metadata.get("targets")
     if not isinstance(targets, list) or not targets:
         raise ValueError("case.json must contain at least one target")
@@ -89,4 +89,4 @@ def load_case(case_dir):
         with Image.open(image_path) as image:
             image.verify()
         target["image"] = image_path
-    return metadata, torch.from_numpy(features), torch.from_numpy(source)
+    return metadata, torch.from_numpy(features), torch.from_numpy(source_w2c)

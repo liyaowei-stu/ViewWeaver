@@ -78,7 +78,7 @@ def main():
         prepared_dir = args.prepared_dir or args.output_dir / "prepared" / run_id
         args.case = prepare_one_case(args.case, prepared_dir, args.vggt_model, options)
     case_path = args.case
-    metadata, features, source = load_case(case_path)
+    metadata, features, source_w2c = load_case(case_path)
     if features.shape[0] != args.input_views:
         raise ValueError(f"Expected {args.input_views} input views, found {features.shape[0]}")
     references = []
@@ -102,12 +102,12 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     if args.mode == "prepared":
         from viewweaver.preprocessing import render_cached_case
-        metadata["targets"], _ = render_cached_case(case_path, source, output, options)
+        metadata["targets"], _ = render_cached_case(case_path, source_w2c, output, options)
     views = list(range(len(metadata["targets"])))
     from viewweaver.loading import load_pipeline
     pipeline = load_pipeline(args.base_model, args.checkpoint, top_k=args.top_k)
     features = features.to(device="cuda", dtype=torch.bfloat16)
-    source = source.to(device="cuda", dtype=torch.bfloat16)
+    source_w2c = source_w2c.to(device="cuda", dtype=torch.bfloat16)
     generator = torch.Generator(device="cuda").manual_seed(seed)
     for index in views:
         target = metadata["targets"][index]
@@ -116,7 +116,7 @@ def main():
         pose = torch.from_numpy(target["w2c"]).unsqueeze(0).to(device="cuda", dtype=torch.bfloat16)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             result = pipeline(
-                prompt=prompt, image=render, recon_feats=features, source_w2c=source,
+                prompt=prompt, image=render, recon_feats=features, source_w2c=source_w2c,
                 target_w2c=pose, height=args.height, width=args.width,
                 num_inference_steps=args.steps, guidance_scale=args.guidance_scale,
                 true_cfg_scale=1.0, generator=generator, max_sequence_length=512,
