@@ -191,6 +191,8 @@ def prepare_one_case(case_path, output_root, model_path, options):
     if not weight.is_file():
         raise FileNotFoundError(weight)
     case_path = case_path.resolve()
+    # Validate inputs before loading VGGT; discard the data here because
+    # prepare_case() reloads it for processing after the model is ready.
     load_raw_case(case_path, expected_views=options["input_views"])
     output = output_root / case_path.name
     if output.exists():
