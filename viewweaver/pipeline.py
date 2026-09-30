@@ -13,9 +13,7 @@
 # limitations under the License.
 
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Union, Tuple
-from einops import rearrange
-
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -43,7 +41,6 @@ from diffusers.utils import (
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.flux.pipeline_output import FluxPipelineOutput
-
 
 from .models.transformer_flux import FluxTransformer2DModel
 
@@ -314,13 +311,6 @@ class ViewWeaverPipeline(
 
         text_input_ids = text_inputs.input_ids
 
-        # untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-        # if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-        #     removed_text = self.tokenizer.batch_decode(untruncated_ids[:, self.tokenizer_max_length - 1 : -1])
-        #     logger.warning(
-        #         "The following part of your input was truncated because CLIP can only handle sequences up to"
-        #         f" {self.tokenizer_max_length} tokens: {removed_text}"
-            # )
         prompt_embeds = self.text_encoder(text_input_ids.to(device), output_hidden_states=False)
 
         # Use pooled output of CLIPTextModel
@@ -542,13 +532,7 @@ class ViewWeaverPipeline(
         latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height)[:, None]
         latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(width)[None, :]
 
-        latent_image_id_height, latent_image_id_width, latent_image_id_channels = latent_image_ids.shape
-
-        latent_image_ids = latent_image_ids.reshape(
-            latent_image_id_height * latent_image_id_width, latent_image_id_channels
-        )
-
-        return latent_image_ids.to(device=device, dtype=dtype)
+        return latent_image_ids.reshape(height * width, 3).to(device=device, dtype=dtype)
 
     @staticmethod
     # Copied from diffusers.pipelines.flux.pipeline_flux.FluxPipeline._pack_latents
@@ -575,86 +559,6 @@ class ViewWeaverPipeline(
         latents = latents.reshape(batch_size, channels // (2 * 2), height, width)
 
         return latents
-
-    @staticmethod
-    def _pack_feats(
-        feats: torch.Tensor,
-        batch_size: int,
-        num_views: int,
-        num_channels_feats: int,
-        height: int,
-        width: int,
-        patch_size: int = 1,
-    ):
-        """
-        Args:
-            feats: (B, V, C, H, W)
-        Returns:
-            packed_feats: (B, V, (H//p)*(W//p), C*p*p)
-        """
-        B, V, C, H, W = feats.shape
-        assert B == batch_size and V == num_views
-        assert C == num_channels_feats
-        assert H == height and W == width
-        assert H % patch_size == 0 and W % patch_size == 0
-
-        feats = feats.view(
-            B,
-            V,
-            C,
-            H // patch_size,
-            patch_size,
-            W // patch_size,
-            patch_size,
-        )
-
-        feats = feats.permute(
-            0,  # B
-            1,  # V
-            3,  # H//p
-            5,  # W//p
-            2,  # C
-            4,  # p
-            6,  # p
-        ).contiguous()
-
-        feats = feats.view(
-            B,
-            V,
-            (H // patch_size) * (W // patch_size),
-            C * patch_size * patch_size,
-        )
-
-        return feats
-
-    @staticmethod
-    def _unpack_feats(feats, batch_size, num_views, num_channels_feats, height, width):
-        patch_size = 1
-
-        # feats: (B, V, HW, C * p * p)
-        feats = feats.view(
-            batch_size,
-            num_views,
-            height // patch_size,
-            width // patch_size,
-            num_channels_feats,
-            patch_size,
-            patch_size,
-        )
-
-        # (B, V, H//p, W//p, C, p, p) -> (B, V, C, H//p, p, W//p, p)
-        feats = feats.permute(0, 1, 4, 2, 5, 3, 6)
-
-        # (B, V, C, H, W)
-        feats = feats.reshape(
-            batch_size,
-            num_views,
-            num_channels_feats,
-            height,
-            width,
-        )
-
-        return feats
 
     def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator):
         if isinstance(generator, list):
@@ -727,33 +631,30 @@ class ViewWeaverPipeline(
         width = 2 * (int(width) // (self.vae_scale_factor * 2))
         shape = (batch_size, num_channels_latents, height, width)
 
-        image_latents = image_ids = None
+        render_latents = render_ids = None
         if image is not None:
             image = image.to(device=device, dtype=dtype)
             if image.shape[1] != self.latent_channels:
-                image_latents = self._encode_vae_image(image=image, generator=generator)
+                render_latents = self._encode_vae_image(image=image, generator=generator)
             else:
-                image_latents = image
-            if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
-                # expand init_latents for batch_size
-                additional_image_per_prompt = batch_size // image_latents.shape[0]
-                image_latents = torch.cat([image_latents] * additional_image_per_prompt, dim=0)
-            elif batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] != 0:
+                render_latents = image
+            if batch_size > render_latents.shape[0] and batch_size % render_latents.shape[0] == 0:
+                # Repeat the rendered condition for each prompt.
+                additional_image_per_prompt = batch_size // render_latents.shape[0]
+                render_latents = torch.cat([render_latents] * additional_image_per_prompt, dim=0)
+            elif batch_size > render_latents.shape[0] and batch_size % render_latents.shape[0] != 0:
                 raise ValueError(
-                    f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
+                    f"Cannot duplicate `image` of batch size {render_latents.shape[0]} to {batch_size} text prompts."
                 )
-            else:
-                image_latents = torch.cat([image_latents], dim=0)
 
-            image_latent_height, image_latent_width = image_latents.shape[2:]
-            image_latents = self._pack_latents(
-                image_latents, batch_size, num_channels_latents, image_latent_height, image_latent_width
+            render_latent_height, render_latent_width = render_latents.shape[2:]
+            render_latents = self._pack_latents(
+                render_latents, batch_size, num_channels_latents, render_latent_height, render_latent_width
             )
-            image_ids = self._prepare_latent_image_ids(
-                batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
+            # Rendered and generated tokens share target-frame ID 0.
+            render_ids = self._prepare_latent_image_ids(
+                batch_size, render_latent_height // 2, render_latent_width // 2, device, dtype
             )
-            # image ids are the same as latent ids with the first dimension set to 1 instead of 0
-            # image_ids[..., 0] = 1
 
         latent_ids = self._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
 
@@ -763,7 +664,7 @@ class ViewWeaverPipeline(
         else:
             latents = latents.to(device=device, dtype=dtype)
 
-        return latents, image_latents, latent_ids, image_ids
+        return latents, render_latents, latent_ids, render_ids
 
     @property
     def guidance_scale(self):
@@ -829,7 +730,7 @@ class ViewWeaverPipeline(
 
         Args:
             image (`torch.Tensor`, `PIL.Image.Image`, `np.ndarray`, `List[torch.Tensor]`, `List[PIL.Image.Image]`, or `List[np.ndarray]`):
-                `Image`, numpy array or tensor representing an image batch to be used as the starting point. For both
+                Rendered target view used as conditioning. For both
                 numpy array and pytorch tensor, the expected value range is between `[0, 1]` If it's a tensor or a list
                 or tensors, the expected shape should be `(B, C, H, W)` or `(C, H, W)`. If it is a numpy array or a
                 list of arrays, the expected shape should be `(B, H, W, C)` or `(H, W, C)` It can also accept image
@@ -849,11 +750,11 @@ class ViewWeaverPipeline(
                 `text_encoder_2`. If not defined, `negative_prompt` is used in all the text-encoders.
             true_cfg_scale (`float`, *optional*, defaults to 1.0):
                 When > 1.0 and a provided `negative_prompt`, enables true classifier-free guidance.
-            height (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
+            height (`int`, *optional*, defaults to self.default_sample_size * self.vae_scale_factor):
                 The height in pixels of the generated image. This is set to 1024 by default for the best results.
-            width (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
+            width (`int`, *optional*, defaults to self.default_sample_size * self.vae_scale_factor):
                 The width in pixels of the generated image. This is set to 1024 by default for the best results.
-            num_inference_steps (`int`, *optional*, defaults to 50):
+            num_inference_steps (`int`, *optional*, defaults to 28):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference.
             sigmas (`List[float]`, *optional*):
@@ -926,14 +827,12 @@ class ViewWeaverPipeline(
                 area while maintaining the aspect ratio.
             preferred_resolutions (`List[Tuple[int, int]]`, *optional*):
                 The preferred resolutions of the generated image. If not provided, the default resolutions will be used.
-            render_feats (`torch.FloatTensor`, *optional*):
-                Pre-generated render features.
             recon_feats (`torch.FloatTensor`, *optional*):
-                Pre-generated recon features.
+                VGGT features of shape `(num_views, channels, height, width)` or with a leading batch dimension.
             target_w2c (`torch.FloatTensor`, *optional*):
-                Pre-generated target world-to-camera matrix.
+                Target world-to-camera matrix of shape `(1, 3, 4)` or `(batch_size, 1, 3, 4)`.
             source_w2c (`torch.FloatTensor`, *optional*):
-                Pre-generated source world-to-camera matrix.
+                Reference world-to-camera matrices of shape `(num_views, 3, 4)` or with a leading batch dimension.
         Examples:
 
         Returns:
@@ -947,12 +846,9 @@ class ViewWeaverPipeline(
 
         original_height, original_width = height, width
 
-
         multiple_of = self.vae_scale_factor * 2
         width = width // multiple_of * multiple_of
         height = height // multiple_of * multiple_of
-
-
 
         if height != original_height or width != original_width:
             logger.warning(
@@ -1044,7 +940,7 @@ class ViewWeaverPipeline(
 
         # 4. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
-        latents, image_latents, latent_ids, render_ids = self.prepare_latents(
+        latents, render_latents, latent_ids, render_ids = self.prepare_latents(
             image,
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -1055,7 +951,7 @@ class ViewWeaverPipeline(
             generator,
             latents,
         )
-        
+
         if target_w2c.ndim == 3:
             target_w2c = target_w2c.unsqueeze(0)
         if source_w2c.ndim == 3:
@@ -1064,10 +960,13 @@ class ViewWeaverPipeline(
         if recon_feats.ndim == 4:
             recon_feats = recon_feats.unsqueeze(0)
 
+        if recon_feats.ndim != 5 or recon_feats.shape[0] != batch_size:
+            raise ValueError("recon_feats must have shape (batch_size, num_views, channels, height, width)")
         recon_ids = self._prepare_latent_image_ids(
-                batch_size, recon_feats.shape[3], recon_feats.shape[4], device, recon_feats.dtype
-            )        
-        recon_feats = self._pack_feats(recon_feats, batch_size, recon_feats.shape[1], recon_feats.shape[2], recon_feats.shape[3], recon_feats.shape[4])
+            batch_size, *recon_feats.shape[-2:], device, recon_feats.dtype
+        )
+        # Keep views separate; flatten each feature grid in row-major order.
+        recon_feats = recon_feats.flatten(3).transpose(2, 3).contiguous()
 
         # 5. Prepare timesteps
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
@@ -1141,15 +1040,11 @@ class ViewWeaverPipeline(
                 if image_embeds is not None:
                     self._joint_attention_kwargs["ip_adapter_image_embeds"] = image_embeds
 
-
-                latent_model_input = latents
-
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-
                 noise_pred = self.transformer(
-                    hidden_states=latent_model_input,
-                    render_latents=image_latents,
+                    hidden_states=latents,
+                    render_latents=render_latents,
                     recon_feats=recon_feats,
                     timestep=timestep / 1000,
                     guidance=guidance,
@@ -1170,8 +1065,8 @@ class ViewWeaverPipeline(
                     if negative_image_embeds is not None:
                         self._joint_attention_kwargs["ip_adapter_image_embeds"] = negative_image_embeds
                     neg_noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        render_latents=torch.zeros_like(image_latents),
+                        hidden_states=latents,
+                        render_latents=torch.zeros_like(render_latents),
                         recon_feats=torch.zeros_like(recon_feats),
                         timestep=timestep / 1000,
                         guidance=guidance,

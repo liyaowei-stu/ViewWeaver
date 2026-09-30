@@ -635,6 +635,29 @@ class FluxTransformer2DModel(
 
         self.gradient_checkpointing = False
 
+    def _apply_view_moe(
+        self,
+        view_moe,
+        hidden_states,
+        num_noisy_tokens,
+        recon_feats,
+        target_w2c,
+        source_w2c,
+        rotary_emb,
+    ):
+        """Refine generated tokens with reference features; preserve render tokens."""
+        noisy_states = hidden_states[:, :num_noisy_tokens]
+        render_states = hidden_states[:, num_noisy_tokens:]
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            noisy_states, _ = self._gradient_checkpointing_func(
+                view_moe, noisy_states, recon_feats, target_w2c, source_w2c, rotary_emb,
+            )
+        else:
+            noisy_states, _ = view_moe(
+                noisy_states, recon_feats, target_w2c, source_w2c, image_rotary_emb=rotary_emb,
+            )
+        return torch.cat((noisy_states, render_states), dim=1)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -663,18 +686,26 @@ class FluxTransformer2DModel(
         Args:
             hidden_states (`torch.Tensor` of shape `(batch_size, image_sequence_length, in_channels)`):
                 Input `hidden_states`.
-            render_input (`torch.Tensor` of shape `(batch_size, render_sequence_length, render_channels)`):
-                Input `render_input`.
-            render_ids (`torch.Tensor` of shape `(batch_size, render_sequence_length, 2)`):
-                Input `render_ids`.
+            render_latents (`torch.Tensor` of shape `(batch_size, render_sequence_length, in_channels)`):
+                Packed VAE latents of the rendered target view.
+            img_ids, txt_ids, render_ids (`torch.Tensor` of shape `(sequence_length, 3)`):
+                Position coordinates for generated, text, and rendered tokens, respectively.
+            recon_feats (`torch.Tensor` of shape `(batch_size, num_views, reference_sequence_length, channels)`):
+                Packed VGGT features from the reference views.
+            recon_ids (`torch.Tensor` of shape `(reference_sequence_length, 3)`):
+                Shared reference grid coordinates. View IDs are assigned internally from 1 to num_views.
+            target_w2c (`torch.Tensor` of shape `(batch_size, 1, 3, 4)`):
+                Target world-to-camera matrix.
+            source_w2c (`torch.Tensor` of shape `(batch_size, num_views, 3, 4)`):
+                Reference world-to-camera matrices in feature order.
             encoder_hidden_states (`torch.Tensor` of shape `(batch_size, text_sequence_length, joint_attention_dim)`):
                 Conditional embeddings (embeddings computed from the input conditions such as prompts) to use.
             pooled_projections (`torch.Tensor` of shape `(batch_size, projection_dim)`): Embeddings projected
                 from the embeddings of input conditions.
             timestep ( `torch.LongTensor`):
                 Used to indicate denoising step.
-            block_controlnet_hidden_states: (`list` of `torch.Tensor`):
-                A list of tensors that if specified are added to the residuals of transformer blocks.
+            controlnet_block_samples, controlnet_single_block_samples (`list` of `torch.Tensor`, *optional*):
+                Residuals added after the dual-stream and single-stream blocks, respectively.
             joint_attention_kwargs (`dict`, *optional*):
                 A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
                 `self.processor` in
@@ -702,8 +733,8 @@ class FluxTransformer2DModel(
                     "Passing `scale` via `joint_attention_kwargs` when not using the PEFT backend is ineffective."
                 )
 
-        txt_len = encoder_hidden_states.shape[1]
-        noisy_len = hidden_states.shape[1]
+        num_text_tokens = encoder_hidden_states.shape[1]
+        num_noisy_tokens = hidden_states.shape[1]
 
         hidden_states = torch.cat([hidden_states, render_latents], dim=1)
 
@@ -720,29 +751,24 @@ class FluxTransformer2DModel(
         )
         encoder_hidden_states = self.context_embedder(encoder_hidden_states)
 
-        # batch-level positional embeddings, Due to the different positional encodings for each batch.
-        if txt_ids.ndim == 2 and img_ids.ndim == 2 and render_ids.ndim == 2:
-            ids = torch.cat((txt_ids, img_ids, render_ids), dim=0)
-            image_rotary_emb = self.pos_embed(ids)
-        else:
-            raise ValueError(f"txt_ids and img_ids and render_ids must have the same number of dimensions, but got {txt_ids.ndim} and {img_ids.ndim} and {render_ids.ndim}")
-        
+        for name, ids in (
+            ("txt_ids", txt_ids), ("img_ids", img_ids), ("render_ids", render_ids), ("recon_ids", recon_ids)
+        ):
+            if ids.ndim != 2 or ids.shape[1] != 3:
+                raise ValueError(f"{name} must have shape (num_tokens, 3), got {tuple(ids.shape)}")
 
-        if recon_ids.ndim == 2:
-            view_num = recon_feats.shape[1]
-            N = recon_ids.shape[0]
-            # 复制 recon_ids S 份 → [S, N, 3]
-            recon_ids_all = recon_ids.unsqueeze(0).expand(view_num, -1, -1).clone()
-            # 写入第 0 列为 view id
-            recon_ids_all[:, :, 0] = torch.arange(
-                1, view_num + 1, device=recon_ids.device
-            ).view(view_num, 1)
-            # 拉平 → [S*N, 3]
-            recon_ids_flat = recon_ids_all.reshape(-1, 3)
-            recon_rotary_emb = self.pos_embed(recon_ids_flat)
-        else:
-            raise ValueError(f"recon_ids must have the same number of dimensions, but got {recon_ids.ndim}")
+        # Joint attention follows [text, generated, rendered] token order.
+        image_rotary_emb = self.pos_embed(torch.cat((txt_ids, img_ids, render_ids), dim=0))
+        query_rotary_emb = tuple(
+            emb[num_text_tokens:num_text_tokens + num_noisy_tokens] for emb in image_rotary_emb
+        )
 
+        # Reference tokens are view-major, with IDs 1..num_views; target tokens use ID 0.
+        num_views = recon_feats.shape[1]
+        reference_ids = recon_ids.unsqueeze(0).expand(num_views, -1, -1).clone()
+        reference_ids[:, :, 0] = torch.arange(1, num_views + 1, device=recon_ids.device)[:, None]
+        reference_rotary_emb = self.pos_embed(reference_ids.reshape(-1, 3))
+        view_rotary_emb = (query_rotary_emb, reference_rotary_emb)
 
         if joint_attention_kwargs is not None and "ip_adapter_image_embeds" in joint_attention_kwargs:
             ip_adapter_image_embeds = joint_attention_kwargs.pop("ip_adapter_image_embeds")
@@ -759,19 +785,6 @@ class FluxTransformer2DModel(
                     image_rotary_emb,
                     joint_attention_kwargs,
                 )
-                noisy_state, render_state = hidden_states.split_with_sizes([hidden_states.shape[1] - render_latents.shape[1], render_latents.shape[1]], dim=1)
-                q_cos_sin = (image_rotary_emb[0][txt_len:txt_len+noisy_len], image_rotary_emb[1][txt_len:txt_len+noisy_len])
-                k_cos_sin = recon_rotary_emb
-                noisy_state, weights = self._gradient_checkpointing_func(
-                    self.view_moe_double, 
-                    noisy_state, 
-                    recon_feats, 
-                    target_w2c, 
-                    source_w2c, 
-                    (q_cos_sin, k_cos_sin),
-                )
-                hidden_states = torch.cat([noisy_state, render_state], dim=1)
-
             else:
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
@@ -780,17 +793,11 @@ class FluxTransformer2DModel(
                     image_rotary_emb=image_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
-                noisy_state, render_state = hidden_states.split_with_sizes([hidden_states.shape[1] - render_latents.shape[1], render_latents.shape[1]], dim=1)
-                q_cos_sin = (image_rotary_emb[0][txt_len:txt_len+noisy_len], image_rotary_emb[1][txt_len:txt_len+noisy_len])
-                k_cos_sin = recon_rotary_emb
-                noisy_state, weights = self.view_moe_double(
-                    noisy_state, 
-                    recon_feats, 
-                    target_w2c, 
-                    source_w2c, 
-                    image_rotary_emb=(q_cos_sin, k_cos_sin),
-                )
-                hidden_states = torch.cat([noisy_state, render_state], dim=1)
+
+            hidden_states = self._apply_view_moe(
+                self.view_moe_double, hidden_states, num_noisy_tokens, recon_feats,
+                target_w2c, source_w2c, view_rotary_emb,
+            )
 
             # controlnet residual
             if controlnet_block_samples is not None:
@@ -814,22 +821,6 @@ class FluxTransformer2DModel(
                     image_rotary_emb,
                     joint_attention_kwargs,
                 )
-
-                noisy_state, render_state = hidden_states.split_with_sizes([hidden_states.shape[1] - render_latents.shape[1], render_latents.shape[1]], dim=1)
-                q_cos_sin = (image_rotary_emb[0][txt_len:txt_len+noisy_len], image_rotary_emb[1][txt_len:txt_len+noisy_len])
-                k_cos_sin = recon_rotary_emb
-                noisy_state, weights = self._gradient_checkpointing_func(
-                    self.view_moe_single, 
-                    noisy_state, 
-                    recon_feats, 
-                    target_w2c, 
-                    source_w2c, 
-                    (q_cos_sin, k_cos_sin),
-                )
-                hidden_states = torch.cat([noisy_state, render_state], dim=1)
-
-
-
             else:
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
@@ -838,18 +829,11 @@ class FluxTransformer2DModel(
                     image_rotary_emb=image_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
-                noisy_state, render_state = hidden_states.split_with_sizes([hidden_states.shape[1] - render_latents.shape[1], render_latents.shape[1]], dim=1)
-                q_cos_sin = (image_rotary_emb[0][txt_len:txt_len+noisy_len], image_rotary_emb[1][txt_len:txt_len+noisy_len])
-                k_cos_sin = recon_rotary_emb
-                noisy_state, weights = self.view_moe_single(
-                    noisy_state, 
-                    recon_feats, 
-                    target_w2c, 
-                    source_w2c, 
-                    image_rotary_emb=(q_cos_sin, k_cos_sin),
-                )
-                hidden_states = torch.cat([noisy_state, render_state], dim=1)
-            
+
+            hidden_states = self._apply_view_moe(
+                self.view_moe_single, hidden_states, num_noisy_tokens, recon_feats,
+                target_w2c, source_w2c, view_rotary_emb,
+            )
 
             # controlnet residual
             if controlnet_single_block_samples is not None:
