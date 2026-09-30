@@ -180,7 +180,7 @@ def main():
     # Exercise the complete denoising path with tiny random components, no downloads.
     from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
     from viewweaver.models.transformer_flux import FluxTransformer2DModel
-    from viewweaver.pipeline import FluxMVKontextPipeline
+    from viewweaver.pipeline import ViewWeaverPipeline
     transformer = FluxTransformer2DModel(
         in_channels=16, num_layers=1, num_single_layers=1,
         attention_head_dim=16, num_attention_heads=2, joint_attention_dim=24,
@@ -193,7 +193,7 @@ def main():
                        down_block_types=("DownEncoderBlock2D",) * 4,
                        up_block_types=("UpDecoderBlock2D",) * 4,
                        norm_num_groups=4, shift_factor=0.0, scaling_factor=1.0)
-    pipeline = FluxMVKontextPipeline(
+    pipeline = ViewWeaverPipeline(
         transformer=transformer, vae=vae,
         scheduler=FlowMatchEulerDiscreteScheduler(use_dynamic_shifting=True),
         text_encoder=None, text_encoder_2=None, tokenizer=None, tokenizer_2=None,

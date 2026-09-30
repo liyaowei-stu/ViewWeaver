@@ -59,29 +59,20 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 EXAMPLE_DOC_STRING = """
     Examples:
+        Load the ViewWeaver weights and base model:
+
         ```py
-        >>> import torch
-        >>> from diffusers import FluxMVKontextPipeline
-        >>> from diffusers.utils import load_image
-
-        >>> pipe = FluxMVKontextPipeline.from_pretrained(
-        ...     "black-forest-labs/FLUX.1-Kontext-dev", torch_dtype=torch.bfloat16
+        >>> from viewweaver.pipeline import ViewWeaverPipeline
+        >>> from viewweaver.loading import load_pipeline
+        >>> pipe: ViewWeaverPipeline = load_pipeline(
+        ...     "checkpoints/flux-kontext", "checkpoints/viewweaver"
         ... )
-        >>> pipe.to("cuda")
-
-        >>> image = load_image(
-        ...     "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/yarn-art-pikachu.png"
-        ... ).convert("RGB")
-        >>> prompt = "Make Pikachu hold a sign that says 'Black Forest Labs is awesome', yarn art style, detailed, vibrant colors"
-        >>> image = pipe(
-        ...     image=image,
-        ...     prompt=prompt,
-        ...     guidance_scale=2.5,
-        ...     generator=torch.Generator().manual_seed(42),
-        ... ).images[0]
-        >>> image.save("output.png")
         ```
+
+        See `infer.py` for generation with prepared reference features, source cameras,
+        and a rendered target view.
 """
+
 
 def calculate_shift(
     image_seq_len,
@@ -170,7 +161,7 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 
-class FluxMVKontextPipeline(
+class ViewWeaverPipeline(
     DiffusionPipeline,
     FluxLoraLoaderMixin,
     FromSingleFileMixin,
@@ -178,7 +169,9 @@ class FluxMVKontextPipeline(
     FluxIPAdapterMixin,
 ):
     r"""
-    The Flux Kontext pipeline for image-to-image and text-to-image generation.
+    The ViewWeaver pipeline for geometry-grounded generative rendering.
+
+    Uses FLUX.1-Kontext-dev with ViewMoE reference features and source/target cameras.
 
     Reference: https://bfl.ai/announcements/flux-1-kontext-dev
 

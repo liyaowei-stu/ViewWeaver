@@ -1,4 +1,4 @@
-"""Strict loading of the m10 LoRA and its two ViewMoE modules."""
+"""Strict loading of the ViewWeaver LoRA and its two ViewMoE modules."""
 from pathlib import Path
 
 import torch
@@ -7,7 +7,7 @@ from safetensors.torch import load_file
 
 from .models.transformer_flux import FluxTransformer2DModel
 from .models.view_moe import ViewMoE
-from .pipeline import FluxMVKontextPipeline
+from .pipeline import ViewWeaverPipeline
 
 
 def load_pipeline(base_model, checkpoint, device="cuda", top_k=4):
@@ -52,7 +52,7 @@ def load_pipeline(base_model, checkpoint, device="cuda", top_k=4):
         setattr(transformer, name, module)
         del state
     transformer.requires_grad_(False).eval()
-    pipeline = FluxMVKontextPipeline.from_pretrained(
+    pipeline = ViewWeaverPipeline.from_pretrained(
         str(base_model), transformer=transformer, torch_dtype=dtype, local_files_only=True,
     )
     return pipeline.to(device=device, dtype=dtype)

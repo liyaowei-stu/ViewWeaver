@@ -1,1 +1,1 @@
-"""ViewWeaver: inference for the MVCustom m10 checkpoint."""
+"""ViewWeaver: geometry-grounded generative rendering."""

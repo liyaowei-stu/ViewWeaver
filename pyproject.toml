@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "viewweaver"
 version = "0.1.0"
-description = "Standalone inference for the MVCustom m10 ViewMoE checkpoint"
+description = "ViewWeaver: Geometry-Grounded Generative Rendering for 3D-Aware Image Customization"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.6,<3",
