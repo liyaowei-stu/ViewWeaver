@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "viewweaver"
+version = "0.1.0"
+description = "Standalone inference for the MVCustom m10 ViewMoE checkpoint"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.6,<3",
+    "diffusers==0.36.0",
+    "transformers==4.57.6",
+    "peft==0.18.1",
+    "accelerate==1.12.0",
+    "safetensors==0.7.0",
+    "numpy>=1.26,<3",
+    "Pillow>=10",
+    "einops>=0.8",
+    "sentencepiece>=0.2",
+    "protobuf>=4",
+    "opencv-python>=4.8,<4.12",
+]
+
+[project.optional-dependencies]
+prepare = ["vggt @ git+https://github.com/facebookresearch/vggt.git@a333deb30a4a8e62b284b968ff7938a1f0b0f3fa"]
+
+[tool.setuptools.packages.find]
+include = ["viewweaver*"]

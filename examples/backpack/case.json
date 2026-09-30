@@ -1,0 +1,46 @@
+{
+  "id": "backpack",
+  "prompt": "Place the blue patterned backpack on a thick bed of green moss at the base of an old tree in a misty forest.",
+  "seed": 123,
+  "references": [
+    {
+      "image": "images/000.png",
+      "mask": "masks/000.png"
+    },
+    {
+      "image": "images/001.png",
+      "mask": "masks/001.png"
+    },
+    {
+      "image": "images/002.png",
+      "mask": "masks/002.png"
+    },
+    {
+      "image": "images/003.png",
+      "mask": "masks/003.png"
+    },
+    {
+      "image": "images/004.png",
+      "mask": "masks/004.png"
+    },
+    {
+      "image": "images/005.png",
+      "mask": "masks/005.png"
+    },
+    {
+      "image": "images/006.png",
+      "mask": "masks/006.png"
+    },
+    {
+      "image": "images/007.png",
+      "mask": "masks/007.png"
+    }
+  ],
+  "provenance": {
+    "benchmark_instance": "backpack_003",
+    "input_images": "/pfs/yaoweili/workspace/code/worldmodel/MVCustom_Project/MVCustom/data/benchmark/data/GSO12_el_custom_pp_dx0_dy0.25_0.35/backpack/in_8/input",
+    "note": "Eight references in benchmark in_8/input order, with matching masks. Only RGB images and masks copied; no features, cameras, depths or renders.",
+    "scene_type": "forest",
+    "scene_reference": "/pfs/yaoweili/workspace/code/worldmodel/MVCustom_Project/MVCustom/checkpoints/mv-custom-download-v2/mv-custom-download/test/20260113_m10_d07_res512_topk_6_20260311_0506/checkpoints_8800/GSO12_in8_out12_res512x512_g3.5_ts1.0_numsteps32_seed123/images/backpack_003_010.png"
+  }
+}
